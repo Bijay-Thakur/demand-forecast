@@ -3,7 +3,16 @@ import argparse
 import os
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.db.connection import get_engine
+
+
+def _insert_ignore_duplicates(table, conn, keys, data_iter):
+    """to_sql helper: silently skip rows that violate a unique constraint."""
+    data = [dict(zip(keys, row)) for row in data_iter]
+    stmt = pg_insert(table.table).values(data).on_conflict_do_nothing()
+    result = conn.execute(stmt)
+    return result.rowcount
 
 # CSV has two different header rows (row 0 = invoice-header columns, row 2 = detail columns).
 # pandas uses row 0 as column names, so Detail rows are accessed via the row-0 name
@@ -137,16 +146,26 @@ def main(csv_path: str):
         "net_unit_raw":  "net_unit_price"
     })
 
+    before = core_df.shape[0]
     core_df.to_sql(
         "line_items",
         con=engine,
         schema="core",
         if_exists="append",
         index=False,
-        method="multi"
+        method=_insert_ignore_duplicates
     )
 
-    print(f"✅ Loaded: {source_file}")
+    with engine.connect() as conn:
+        inserted = conn.execute(
+            text("SELECT COUNT(*) FROM core.line_items WHERE source_file = :sf"),
+            {"sf": source_file}
+        ).scalar()
+    skipped = before - inserted
+    if skipped > 0:
+        print(f"⚠️  Duplicates found, skipped {skipped} row(s) — moving to next.")
+
+    print(f"✅ Loaded: {source_file} ({inserted} rows inserted)")
     print("✅ discount_pct stored as integer percentage (0-100)")
     print("✅ promo_flag set where discount_pct > 30")
     print("✅ brand_raw captured in staging")
