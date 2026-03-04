@@ -25,7 +25,7 @@ from src.db.connection import get_engine
 
 @dataclass
 class DatasetConfig:
-    min_weeks: int = 8  # keep SKUs with at least this many weeks
+    min_weeks: int = 20  # keep SKUs with at least this many weeks
     test_weeks: int = 6  # last N weeks reserved for test
     out_dir: str = "data/processed"
 
@@ -129,7 +129,7 @@ def drop_untrainable_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df_model
 
 
-def time_split(df_model: pd.dataFrame, test_weeks: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+#def time_splits(df_model: pd.DataFrameataFrame, test_weeks: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Time-based splits: last N weeks = test
 
@@ -145,6 +145,28 @@ def time_split(df_model: pd.dataFrame, test_weeks: int) -> tuple[pd.DataFrame, p
 
     return train, test
 
+def filter_skus_after_feature_engineering(df_model, min_weeks, test_weeks):
+    counts = df_model.groupby("sku_id")["week_start"].count()
+    good_skus = counts[counts >= (min_weeks + test_weeks)].index
+    return df_model[df_model["sku_id"].isin(good_skus)].copy()
+def time_split(df_model: pd.DataFrame, test_weeks: int):
+    
+    train_list = []
+    test_list = []
+
+    for sku, g in df_model.groupby("sku_id"):
+        g = g.sort_values("week_start")
+
+        train_part = g.iloc[:-test_weeks]
+        test_part  = g.iloc[-test_weeks:]
+
+        train_list.append(train_part)
+        test_list.append(test_part)
+
+    train = pd.concat(train_list).reset_index(drop=True)
+    test  = pd.concat(test_list).reset_index(drop=True)
+
+    return train, test
 
 def save_datasets(train: pd.DataFrame, test: pd.DataFrame, out_dir: str) -> None:
     """
@@ -176,6 +198,9 @@ def main():
         args=parser.parse_args()
         
         cfg=DatasetConfig(min_weeks=args.min_weeks,test_weeks=args.test_weeks,out_dir=args.out_dir)
+        df = load_weekly_table()
+        print(df.groupby("sku_id")["week_start"].count().describe())
+        
         
         #1) Load
         df=load_weekly_table()
@@ -189,8 +214,8 @@ def main():
         
         #4) Drop rows we cannot train on
         df_model = drop_untrainable_rows(df_feat)
+        df_model = filter_skus_after_feature_engineering(df_model, cfg.min_weeks, cfg.test_weeks)
         print(f"After drop_untrainable_rows rows={len(df_model):,} skus={df_model['sku_id'].nunique():,}")
-        
          # 5) Time split
         train, test = time_split(df_model, cfg.test_weeks)
         print(f"Train rows={len(train):,} | Test rows={len(test):,}")
